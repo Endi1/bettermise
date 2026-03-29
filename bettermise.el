@@ -1,8 +1,8 @@
 ;;; bettermise.el --- Emacs interface for the mise build tool -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2026 Endi Sukaj
+;; Copyright (C) 2026 Edon Sukaj
 
-;; Author: Endi Sukaj
+;; Author: Edon Sukaj
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "27.1") (transient "0.4.0"))
 ;; Keywords: tools, processes, build
@@ -20,10 +20,8 @@
 ;; Bettermise provides an Emacs interface for mise (https://mise.jdx.dev/),
 ;; the polyglot dev tool manager.  It lets you:
 ;;
-;; - List, install, and remove tool versions
 ;; - Run and manage tasks
 ;; - View and set environment variables
-;; - Inspect project configuration
 ;;
 ;; Entry point: `M-x bettermise'
 
@@ -57,16 +55,6 @@ When nil, use `default-directory'."
 ;; Faces
 ;; ──────────────────────────────────────────────────────────────────
 
-(defface bettermise-tool-name
-  '((t :inherit font-lock-function-name-face :weight bold))
-  "Face for tool names."
-  :group 'bettermise)
-
-(defface bettermise-version
-  '((t :inherit font-lock-constant-face))
-  "Face for version strings."
-  :group 'bettermise)
-
 (defface bettermise-task-name
   '((t :inherit font-lock-keyword-face :weight bold))
   "Face for task names."
@@ -77,16 +65,6 @@ When nil, use `default-directory'."
   "Face for section headers."
   :group 'bettermise)
 
-(defface bettermise-active
-  '((t :inherit success))
-  "Face for active/installed indicators."
-  :group 'bettermise)
-
-(defface bettermise-inactive
-  '((t :inherit warning))
-  "Face for inactive/missing indicators."
-  :group 'bettermise)
-
 ;; ──────────────────────────────────────────────────────────────────
 ;; Internals
 ;; ──────────────────────────────────────────────────────────────────
@@ -95,26 +73,15 @@ When nil, use `default-directory'."
   "Return the project directory for mise commands."
   (or bettermise-project-directory default-directory))
 
-(defun bettermise--run-command (args &optional callback)
-  "Run mise with ARGS synchronously and return output string.
-If CALLBACK is non-nil, run asynchronously and call CALLBACK with output."
+(defun bettermise--run-command (args)
+  "Run mise with ARGS synchronously and return output string."
   (let ((default-directory (bettermise--project-dir)))
-    (if callback
-        (let ((buf (generate-new-buffer " *bettermise-async*")))
-          (set-process-sentinel
-           (start-process "bettermise" buf bettermise-executable
-                          (split-string args))
-           (lambda (proc _event)
-             (when (eq (process-status proc) 'exit)
-               (with-current-buffer (process-buffer proc)
-                 (funcall callback (buffer-string)))
-               (kill-buffer (process-buffer proc))))))
-      (with-temp-buffer
-        (let ((exit-code (apply #'call-process bettermise-executable nil t nil
-                                (split-string-and-unquote args))))
-          (if (zerop exit-code)
-              (buffer-string)
-            (error "mise %s failed (exit %d): %s" args exit-code (buffer-string))))))))
+    (with-temp-buffer
+      (let ((exit-code (apply #'call-process bettermise-executable nil t nil
+                              (split-string-and-unquote args))))
+        (if (zerop exit-code)
+            (buffer-string)
+          (error "mise %s failed (exit %d): %s" args exit-code (buffer-string)))))))
 
 (defun bettermise--run-command-to-buffer (buffer-name args)
   "Run mise ARGS in a compilation-like buffer named BUFFER-NAME."
@@ -123,137 +90,6 @@ If CALLBACK is non-nil, run asynchronously and call CALLBACK with output."
     (compile cmd)
     (with-current-buffer "*compilation*"
       (rename-buffer buffer-name t))))
-
-(defun bettermise--parse-json (args)
-  "Run mise ARGS and parse JSON output."
-  (let ((output (bettermise--run-command args)))
-    (json-parse-string output :object-type 'alist :array-type 'list)))
-
-;; ──────────────────────────────────────────────────────────────────
-;; Tools (ls / install / uninstall / use)
-;; ──────────────────────────────────────────────────────────────────
-
-(defvar bettermise-tools-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "g")   #'bettermise-tools-refresh)
-    (define-key map (kbd "i")   #'bettermise-tool-install)
-    (define-key map (kbd "d")   #'bettermise-tool-uninstall)
-    (define-key map (kbd "u")   #'bettermise-tool-use)
-    (define-key map (kbd "U")   #'bettermise-tool-upgrade)
-    (define-key map (kbd "q")   #'quit-window)
-    (define-key map (kbd "RET") #'bettermise-tool-info)
-    map)
-  "Keymap for `bettermise-tools-mode'.")
-
-(define-derived-mode bettermise-tools-mode special-mode "Bettermise-Tools"
-  "Major mode for viewing mise tools.
-
-\\{bettermise-tools-mode-map}"
-  (setq truncate-lines t)
-  (setq buffer-read-only t))
-
-(defun bettermise--tool-at-point ()
-  "Return the tool@version string for the current line."
-  (save-excursion
-    (beginning-of-line)
-    (when (looking-at "^  \\([^ ]+\\)\\s-+\\([^ ]+\\)")
-      (cons (match-string 1) (match-string 2)))))
-
-(defun bettermise-tools-refresh ()
-  "Refresh the tools list."
-  (interactive)
-  (bettermise-tools))
-
-(defun bettermise-tools ()
-  "Display installed and active mise tools."
-  (interactive)
-  (let* ((output (bettermise--run-command "ls --json"))
-         (tools (json-parse-string output :object-type 'alist :array-type 'list))
-         (buf (get-buffer-create "*bettermise-tools*")))
-    (with-current-buffer buf
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert (propertize "mise Tools" 'face 'bettermise-section-header) "\n")
-        (insert (propertize (format "Directory: %s" (bettermise--project-dir))
-                            'face 'font-lock-comment-face)
-                "\n\n")
-        (insert (propertize (format "  %-20s %-15s %-12s %s" "Tool" "Version" "Status" "Source")
-                            'face 'bold)
-                "\n")
-        (insert "  " (make-string 70 ?─) "\n")
-        (if (null tools)
-            (insert "  No tools configured.\n")
-          (dolist (tool tools)
-            (let* ((name (alist-get 'name tool))
-                   (version (or (alist-get 'version tool) "N/A"))
-                   (installed (alist-get 'installed tool))
-                   (active (alist-get 'active tool))
-                   (source-alist (alist-get 'source tool))
-                   (source (if source-alist
-                               (or (alist-get 'path source-alist) "")
-                             ""))
-                   (status (cond
-                            ((and installed active) "active")
-                            (installed "installed")
-                            (t "missing")))
-                   (status-face (if (string= status "missing")
-                                    'bettermise-inactive
-                                  'bettermise-active)))
-              (insert (format "  %-20s %-15s %-12s %s\n"
-                              (propertize name 'face 'bettermise-tool-name)
-                              (propertize version 'face 'bettermise-version)
-                              (propertize status 'face status-face)
-                              (propertize (if (stringp source) source "")
-                                          'face 'font-lock-comment-face))))))
-        (insert "\n"
-                (propertize "Keys: " 'face 'bold)
-                "i:install  d:uninstall  u:use  U:upgrade  g:refresh  q:quit\n"))
-      (bettermise-tools-mode)
-      (goto-char (point-min)))
-    (pop-to-buffer buf)))
-
-(defun bettermise-tool-install (tool-version)
-  "Install TOOL-VERSION (e.g. \"node@20\" or \"python\")."
-  (interactive "sTool[@version] to install: ")
-  (bettermise--run-command-to-buffer "*bettermise-install*"
-                                     (format "install %s" tool-version)))
-
-(defun bettermise-tool-uninstall (tool-version)
-  "Uninstall TOOL-VERSION."
-  (interactive
-   (let ((tv (bettermise--tool-at-point)))
-     (list (read-string "Tool@version to uninstall: "
-                        (when tv (format "%s@%s" (car tv) (cdr tv)))))))
-  (bettermise--run-command-to-buffer "*bettermise-uninstall*"
-                                     (format "uninstall %s" tool-version)))
-
-(defun bettermise-tool-use (tool-version)
-  "Activate TOOL-VERSION in the current project."
-  (interactive "sTool[@version] to use: ")
-  (bettermise--run-command-to-buffer "*bettermise-use*"
-                                     (format "use %s" tool-version)))
-
-(defun bettermise-tool-upgrade ()
-  "Interactively upgrade tools."
-  (interactive)
-  (bettermise--run-command-to-buffer "*bettermise-upgrade*" "up --interactive"))
-
-(defun bettermise-tool-info ()
-  "Show info for tool at point."
-  (interactive)
-  (let ((tv (bettermise--tool-at-point)))
-    (unless tv (user-error "No tool at point"))
-    (let ((output (bettermise--run-command (format "ls-remote %s" (car tv)))))
-      (with-current-buffer (get-buffer-create "*bettermise-tool-info*")
-        (let ((inhibit-read-only t))
-          (erase-buffer)
-          (insert (propertize (format "Available versions for %s" (car tv))
-                              'face 'bettermise-section-header)
-                  "\n\n")
-          (insert output))
-        (special-mode)
-        (goto-char (point-min)))
-      (pop-to-buffer "*bettermise-tool-info*"))))
 
 ;; ──────────────────────────────────────────────────────────────────
 ;; Tasks (list / run / watch)
@@ -355,15 +191,13 @@ If CALLBACK is non-nil, run asynchronously and call CALLBACK with output."
      (format "watch %s" task))))
 
 (defun bettermise-task-edit-at-point ()
-  "Edit the task at point using $EDITOR or `find-file'."
+  "Edit the task at point."
   (interactive)
   (let ((task (bettermise--task-at-point)))
     (unless task (user-error "No task at point"))
-    ;; Try to find the task file
     (let ((info-output (ignore-errors (bettermise--run-command (format "tasks info %s" task)))))
       (if (and info-output (string-match "source:\\s-*\\(.+\\)" info-output))
           (find-file (string-trim (match-string 1 info-output)))
-        ;; Fallback: open mise.toml
         (let ((toml (expand-file-name "mise.toml" (bettermise--project-dir))))
           (if (file-exists-p toml)
               (find-file toml)
@@ -414,82 +248,17 @@ If CALLBACK is non-nil, run asynchronously and call CALLBACK with output."
     (message "Set %s=%s %s" key value (string-trim output))))
 
 ;; ──────────────────────────────────────────────────────────────────
-;; Config / Doctor / Settings
-;; ──────────────────────────────────────────────────────────────────
-
-(defun bettermise-doctor ()
-  "Run `mise doctor' and display diagnostics."
-  (interactive)
-  (let ((output (bettermise--run-command "doctor"))
-        (buf (get-buffer-create "*bettermise-doctor*")))
-    (with-current-buffer buf
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert (propertize "mise Doctor" 'face 'bettermise-section-header) "\n\n")
-        (insert (ansi-color-apply output)))
-      (special-mode)
-      (goto-char (point-min)))
-    (pop-to-buffer buf)))
-
-(defun bettermise-settings ()
-  "Display current mise settings."
-  (interactive)
-  (let ((output (bettermise--run-command "settings"))
-        (buf (get-buffer-create "*bettermise-settings*")))
-    (with-current-buffer buf
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert (propertize "mise Settings" 'face 'bettermise-section-header) "\n\n")
-        (insert output))
-      (special-mode)
-      (goto-char (point-min)))
-    (pop-to-buffer buf)))
-
-(defun bettermise-open-config ()
-  "Open the project's mise.toml file."
-  (interactive)
-  (let ((toml (expand-file-name "mise.toml" (bettermise--project-dir))))
-    (if (file-exists-p toml)
-        (find-file toml)
-      ;; Try .mise.toml
-      (let ((dot-toml (expand-file-name ".mise.toml" (bettermise--project-dir))))
-        (if (file-exists-p dot-toml)
-            (find-file dot-toml)
-          (when (y-or-n-p "No mise.toml found. Create one? ")
-            (find-file toml)))))))
-
-;; ──────────────────────────────────────────────────────────────────
-;; Exec
-;; ──────────────────────────────────────────────────────────────────
-
-(defun bettermise-exec (command)
-  "Execute COMMAND within the mise environment."
-  (interactive "sCommand to run in mise env: ")
-  (bettermise--run-command-to-buffer "*bettermise-exec*"
-                                     (format "exec -- %s" command)))
-
-;; ──────────────────────────────────────────────────────────────────
-;; Transient menus (main entry point)
+;; Transient menu (main entry point)
 ;; ──────────────────────────────────────────────────────────────────
 
 (transient-define-prefix bettermise ()
   "Mise build tool interface."
-  ["Tools"
-   ("t" "List tools"      bettermise-tools)
-   ("i" "Install tool"    bettermise-tool-install)
-   ("u" "Use tool"        bettermise-tool-use)
-   ("U" "Upgrade tools"   bettermise-tool-upgrade)]
   ["Tasks"
    ("r" "Run task"        bettermise-task-run)
    ("T" "List tasks"      bettermise-tasks)]
-  ["Environment & Config"
+  ["Environment"
    ("e" "Show env"        bettermise-env)
-   ("s" "Set env var"     bettermise-set-env)
-   ("c" "Open config"     bettermise-open-config)
-   ("S" "Settings"        bettermise-settings)]
-  ["Diagnostics"
-   ("d" "Doctor"          bettermise-doctor)
-   ("x" "Exec command"    bettermise-exec)])
+   ("s" "Set env var"     bettermise-set-env)])
 
 (provide 'bettermise)
 
