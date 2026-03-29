@@ -1,12 +1,12 @@
 ;;; bettermise.el --- Emacs interface for the mise build tool -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2026 Edon Sukaj
+;; Copyright (C) 2026 Endi Sukaj
 
-;; Author: Edon Sukaj
+;; Author: Endi Sukaj
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "27.1") (transient "0.4.0"))
 ;; Keywords: tools, processes, build
-;; URL: https://github.com/esukaj/bettermise
+;; URL: https://github.com/Endi1/bettermise
 
 ;; This file is not part of GNU Emacs.
 
