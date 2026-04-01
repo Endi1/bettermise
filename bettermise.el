@@ -83,13 +83,25 @@ When nil, use `default-directory'."
             (buffer-string)
           (error "mise %s failed (exit %d): %s" args exit-code (buffer-string)))))))
 
-(defun bettermise--run-command-to-buffer (buffer-name args)
-  "Run mise ARGS in a compilation-like buffer named BUFFER-NAME."
+(defvar bettermise--compilation-buffer-name "*bettermise-output*"
+  "Name of the single reusable bettermise compilation buffer.")
+
+(defun bettermise--run-command-to-buffer (_buffer-name args)
+  "Run mise ARGS in a single reusable compilation buffer.
+_BUFFER-NAME is ignored; all output goes to `bettermise--compilation-buffer-name'.
+Any running compilation in that buffer is killed first."
   (let ((default-directory (bettermise--project-dir))
-        (cmd (format "%s %s" bettermise-executable args)))
-    (compile cmd)
-    (with-current-buffer "*compilation*"
-      (rename-buffer buffer-name t))))
+        (cmd (format "%s %s" bettermise-executable args))
+        (buf (get-buffer bettermise--compilation-buffer-name)))
+    ;; Kill any running process in the existing buffer
+    (when buf
+      (let ((proc (get-buffer-process buf)))
+        (when (and proc (process-live-p proc))
+          (kill-process proc)
+          (sit-for 0.1))))
+    (let ((compilation-buffer-name-function
+           (lambda (_mode) bettermise--compilation-buffer-name)))
+      (compile cmd))))
 
 ;; ──────────────────────────────────────────────────────────────────
 ;; Tasks (list / run / watch)
